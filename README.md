@@ -34,9 +34,3 @@
    - Đảm bảo Redis server đang chạy ở `localhost:6379` (hoặc chỉnh lại trong code nếu khác)
 
 ---
-
-## Lưu ý
-- Nếu thiếu file `requirements.txt`, hãy tạo bằng lệnh:
-  ```bash
-  pip freeze > requirements.txt
-  ``` 
