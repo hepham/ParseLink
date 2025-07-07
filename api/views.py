@@ -10,7 +10,7 @@ import json
 from django.conf import settings
 from datetime import timedelta
 import re
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 # Redis config (có thể điều chỉnh theo settings thực tế)
 REDIS_HOST = 'localhost'
@@ -100,7 +100,34 @@ class ParseUrlView(APIView):
                         # print('DEBUG: file_url ERROR =', str(e))
                         pass
                 # Chỉ trả về link m3u8
-                result = {'file_url': file_url}
+                if file_url and file_url.endswith('.m3u8'):
+                    try:
+                        m3u8_resp = requests.get(file_url, timeout=10)
+                        m3u8_resp.raise_for_status()
+                        m3u8_text = m3u8_resp.text
+                        # Parse m3u8 for resolutions and links
+                        result_list = []
+                        parsed_file_url = urlparse(file_url)
+                        domain = f"{parsed_file_url.scheme}://{parsed_file_url.netloc}"
+                        for i, line in enumerate(m3u8_text.splitlines()):
+                            if line.startswith('#EXT-X-STREAM-INF:'):
+                                match = re.search(r'RESOLUTION=(\d+x\d+)', line)
+                                if match and i + 1 < len(m3u8_text.splitlines()):
+                                    resolution = match.group(1).replace('x', '*')
+                                    m3u8_link = m3u8_text.splitlines()[i + 1].strip()
+                                    # Prepend domain if m3u8_link is relative
+                                    if not m3u8_link.startswith('http'):
+                                        if m3u8_link.startswith('/'):
+                                            m3u8_link = domain + m3u8_link
+                                        else:
+                                            # handle relative to file_url path
+                                            m3u8_link = urljoin(file_url, m3u8_link)
+                                    result_list.append({'resolutions': resolution, 'link': m3u8_link})
+                        result = {'result': result_list}
+                    except Exception as e:
+                        result = {'file_url': file_url, 'error': f'Failed to parse m3u8: {str(e)}'}
+                else:
+                    result = {'file_url': file_url}
             else:
                 # Lấy tiêu đề và đoạn đầu tiên làm ví dụ
                 title = soup.title.string if soup.title else ''
