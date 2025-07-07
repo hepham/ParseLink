@@ -18,21 +18,21 @@ REDIS_PORT = 6379
 REDIS_DB = 0
 CACHE_EXPIRE = 2 * 24 * 60 * 60  # 2 ngày (giây)
 
-r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
+# r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
 
-def get_cache_key(url):
-    return 'parsed_url:' + hashlib.sha256(url.encode()).hexdigest()
+# def get_cache_key(url):
+#     return 'parsed_url:' + hashlib.sha256(url.encode()).hexdigest()
 
 class ParseUrlView(APIView):
     def post(self, request):
         url = request.data.get('url')
         if not url:
             return Response({'error': 'Missing URL'}, status=status.HTTP_400_BAD_REQUEST)
-        cache_key = get_cache_key(url)
-        cached = r.get(cache_key)
-        # print('DEBUG: cached =', cached)
-        if cached:
-            return Response(json.loads(cached), status=status.HTTP_200_OK)
+        # cache_key = get_cache_key(url)
+        # cached = r.get(cache_key)
+        # # print('DEBUG: cached =', cached)
+        # if cached:
+        #     return Response(json.loads(cached), status=status.HTTP_200_OK)
         try:
             resp = requests.get(url, timeout=10)
             resp.raise_for_status()
@@ -110,7 +110,7 @@ class ParseUrlView(APIView):
                     'title': title,
                     'first_paragraph': first_p
                 }
-            r.setex(cache_key, CACHE_EXPIRE, json.dumps(result))
+            # r.setex(cache_key, CACHE_EXPIRE, json.dumps(result))
             return Response(result, status=status.HTTP_200_OK)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
