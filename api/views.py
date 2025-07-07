@@ -14,7 +14,7 @@ from urllib.parse import urlparse, urljoin
 
 # Redis config (có thể điều chỉnh theo settings thực tế)
 REDIS_HOST = 'localhost'
-REDIS_PORT = 6379
+REDIS_PORT = 6380
 REDIS_DB = 0
 CACHE_EXPIRE = 2 * 24 * 60 * 60  # 2 ngày (giây)
 
