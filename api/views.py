@@ -29,10 +29,10 @@ class ParseUrlView(APIView):
         if not url:
             return Response({'error': 'Missing URL'}, status=status.HTTP_400_BAD_REQUEST)
         cache_key = get_cache_key(url)
-        # cached = r.get(cache_key)
-        # print('DEBUG: cached =', cached)
-        # if cached:
-        #     return Response(json.loads(cached), status=status.HTTP_200_OK)
+        cached = r.get(cache_key)
+        print('DEBUG: cached =', cached)
+        if cached:
+            return Response(json.loads(cached), status=status.HTTP_200_OK)
         try:
             resp = requests.get(url, timeout=10)
             resp.raise_for_status()
