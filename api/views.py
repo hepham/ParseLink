@@ -17,12 +17,14 @@ import re
 from urllib.parse import urlparse, urljoin
 
 from .models import Movie, MovieLink, Transcript, LinkPerformanceLog
+from .encryption import get_public_key, encrypt_response, decrypt_request, is_encrypted_request, encrypt_response_with_session_key, decrypt_request_and_get_session_key
 
+# Initialize logger
 logger = logging.getLogger(__name__)
 
 # Redis config for URL parsing cache
 REDIS_HOST = 'localhost'
-REDIS_PORT = 6379
+REDIS_PORT = 6379  # Docker container port
 REDIS_DB = 0
 CACHE_EXPIRE = 2 * 24 * 60 * 60  # 2 days
 
@@ -206,7 +208,7 @@ def parse_vidsrc_url(url):
                 'full_player_iframe_url': full_player_iframe_url,
                 'source_domain': 'vidsrc.me'
             }
-
+            # print(result)
   
        
         else:
@@ -831,6 +833,187 @@ class MovieLinksWithFallbackAPIView(View):
             }, status=500)
 
 
+# Encryption endpoints
+def get_public_key_endpoint(request):
+    """
+    GET /api/encryption/public-key/
+    Returns server's public key for client encryption
+    """
+    try:
+        public_key_info = get_public_key()
+        return JsonResponse(public_key_info)
+    except Exception as e:
+        logger.error(f"Error getting public key: {e}")
+        return JsonResponse({'error': 'Failed to get public key'}, status=500)
+
+@method_decorator(csrf_exempt, name='dispatch')
+class EncryptedMovieLinksAPIView(View):
+    """
+    Encrypted version of movie links API
+    POST /api/encrypted/movie-links/
+    Accepts and returns encrypted payloads
+    """
+    
+    def post(self, request):
+        """
+        Handle encrypted movie links request
+        """
+        try:
+            # Parse request data
+            data = json.loads(request.body)
+            
+            # Check if request is encrypted
+            if not is_encrypted_request(data):
+                return JsonResponse({
+                    'error': 'This endpoint requires encrypted requests. Get public key from /api/encryption/public-key/'
+                }, status=400)
+            
+            # Decrypt request and get session key
+            try:
+                decrypted_data, session_key = decrypt_request_and_get_session_key(data)
+            except Exception as e:
+                logger.error(f"Failed to decrypt request: {e}")
+                return JsonResponse({'error': 'Invalid encrypted request'}, status=400)
+            
+            # Get parameters from decrypted data
+            if isinstance(decrypted_data, str):
+                decrypted_data = json.loads(decrypted_data)
+            
+            imdb_id = decrypted_data.get('imdb_id')
+            tmdb_id = decrypted_data.get('tmdb_id') or decrypted_data.get('tmdb')
+            
+            # Validate parameters
+            if not imdb_id and not tmdb_id:
+                error_response = {'error': 'At least one of imdb_id or tmdb is required'}
+                encrypted_response = encrypt_response_with_session_key(error_response, session_key)
+                return JsonResponse(encrypted_response, status=400)
+            
+            # Process request (reuse existing logic)
+            links = MovieLink.get_links_by_movie_ids(tmdb_id=tmdb_id, imdb_id=imdb_id)
+            
+            if links.exists():
+                # Database has data, return existing links
+                result_array = []
+                for link in links:
+                    movie = link.movie
+                    movie_id = movie.imdb_id if movie.imdb_id else movie.tmdb_id
+                    link_item = {
+                        "id": movie_id,
+                        "m3u8": link.m3u8_url,
+                        "transcriptid": link.transcript_id if link.transcript_id else ""
+                    }
+                    result_array.append(link_item)
+                
+                # Encrypt response
+                encrypted_response = encrypt_response_with_session_key(result_array, session_key)
+                return JsonResponse(encrypted_response)
+            
+            else:
+                # Database doesn't have data, fallback to URL parsing
+                urls_to_parse = construct_vidsrc_urls(tmdb_id=tmdb_id, imdb_id=imdb_id)
+                
+                if not urls_to_parse:
+                    error_response = {'error': 'No valid URLs could be constructed from provided IDs'}
+                    encrypted_response = encrypt_response_with_session_key(error_response, session_key)
+                    return JsonResponse(encrypted_response, status=400)
+                
+                # Parse URLs (simplified version)
+                successful_results = []
+                for url in urls_to_parse:
+                    cached_result = get_url_cache_result(url)
+                    if cached_result:
+                        if cached_result.get('file_url') and 'error' not in cached_result:
+                            successful_results.append(cached_result)
+                    else:
+                        parse_result = parse_vidsrc_url(url)
+                        if parse_result.get('file_url') and 'error' not in parse_result:
+                            successful_results.append(parse_result)
+                            save_url_cache_result(url, parse_result)
+                
+                if not successful_results:
+                    error_response = {'error': 'Failed to parse any of the constructed URLs'}
+                    encrypted_response = encrypt_response_with_session_key(error_response, session_key)
+                    return JsonResponse(encrypted_response, status=500)
+                
+                # Save to database
+                save_to_database(imdb_id=imdb_id, tmdb_id=tmdb_id, parse_results=successful_results)
+                
+                # Prepare response
+                result_array = []
+                for result in successful_results:
+                    movie_id = imdb_id if imdb_id else tmdb_id
+                    link_item = {
+                        "id": movie_id,
+                        "m3u8": result.get('file_url', ''),
+                        "transcriptid": result.get('id', '')
+                    }
+                    result_array.append(link_item)
+                
+                # Encrypt response
+                encrypted_response = encrypt_response_with_session_key(result_array, session_key)
+                return JsonResponse(encrypted_response)
+            
+        except json.JSONDecodeError:
+            return JsonResponse({'error': 'Invalid JSON format'}, status=400)
+        except Exception as e:
+            logger.error(f"Error in encrypted movie links API: {str(e)}")
+            error_response = {'error': 'Internal server error'}
+            try:
+                # Try to use session key if available, otherwise use regular encryption
+                if 'session_key' in locals():
+                    encrypted_response = encrypt_response_with_session_key(error_response, session_key)
+                else:
+                    encrypted_response = encrypt_response(error_response)
+                return JsonResponse(encrypted_response, status=500)
+            except:
+                return JsonResponse({'error': 'Internal server error'}, status=500)
+
+@method_decorator(csrf_exempt, name='dispatch')
+class EncryptionTestAPIView(View):
+    """
+    Test endpoint for encryption/decryption
+    POST /api/encryption/test/
+    """
+    
+    def post(self, request):
+        """
+        Test encryption/decryption functionality
+        """
+        try:
+            data = json.loads(request.body)
+            
+            if is_encrypted_request(data):
+                # Decrypt and echo back
+                try:
+                    decrypted_data = decrypt_request(data)
+                    response_data = {
+                        'status': 'success',
+                        'message': 'Decryption successful',
+                        'decrypted_data': decrypted_data,
+                        'timestamp': str(json.loads(request.body))
+                    }
+                    encrypted_response = encrypt_response(response_data)
+                    return JsonResponse(encrypted_response)
+                except Exception as e:
+                    return JsonResponse({'error': f'Decryption failed: {str(e)}'}, status=400)
+            else:
+                # Regular request, encrypt response
+                message = data.get('message', 'Hello from server!')
+                response_data = {
+                    'status': 'success',
+                    'message': 'Encryption test',
+                    'echo': message,
+                    'public_key_info': get_public_key()
+                }
+                encrypted_response = encrypt_response(response_data)
+                return JsonResponse(encrypted_response)
+                
+        except json.JSONDecodeError:
+            return JsonResponse({'error': 'Invalid JSON format'}, status=400)
+        except Exception as e:
+            logger.error(f"Error in encryption test API: {str(e)}")
+            return JsonResponse({'error': 'Internal server error'}, status=500)
+
 # Health check endpoint
 def health_check(request):
     """
@@ -844,7 +1027,8 @@ def health_check(request):
             'transcripts': True,
             'master_playlists': True,
             'movie_search': True,
-            'statistics': True
+            'statistics': True,
+            'encryption': True
         },
         'note': 'All m3u8 URLs are master playlists containing multiple quality variants'
     })

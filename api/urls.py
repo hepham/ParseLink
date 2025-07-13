@@ -28,4 +28,9 @@ urlpatterns = [
     
     # Health check endpoint
     path('health/', views.health_check, name='health-check'),
+    
+    # Encryption endpoints
+    path('encryption/public-key/', views.get_public_key_endpoint, name='get-public-key'),
+    path('encryption/test/', views.EncryptionTestAPIView.as_view(), name='encryption-test'),
+    path('encrypted/movie-links/', views.EncryptedMovieLinksAPIView.as_view(), name='encrypted-movie-links'),
 ] 
