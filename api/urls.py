@@ -8,6 +8,9 @@ urlpatterns = [
     # Movie links with fallback API - Get movie links with URL parsing fallback
     path('movie-links/with-fallback/', views.MovieLinksWithFallbackAPIView.as_view(), name='movie-links-with-fallback'),
     
+    # Force parse movie links API - Always parse and update Redis
+    path('movie-links/force-parse/', views.ForceParseMovieLinksAPIView.as_view(), name='movie-links-force-parse'),
+    
     # Movie management API - Create/update movies
     path('movies/', views.MovieManagementAPIView.as_view(), name='movie-management'),
     

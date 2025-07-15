@@ -977,6 +977,64 @@ class EncryptionTestAPIView(View):
             logger.error(f"Error in encryption test API: {str(e)}")
             return JsonResponse({'error': 'Internal server error'}, status=500)
 
+@method_decorator(csrf_exempt, name='dispatch')
+class ForceParseMovieLinksAPIView(View):
+    """
+    API View to force parse movie links (bỏ qua cache, luôn parse lại và lưu vào Redis)
+    POST /api/movie-links/force-parse/
+    Body: {"imdb_id": "tt1234567", "tmdb_id": "12345"}
+    """
+    def post(self, request):
+        try:
+            data = json.loads(request.body)
+            imdb_id = data.get('imdb_id')
+            tmdb_id = data.get('tmdb_id') or data.get('tmdb')
+            if not imdb_id and not tmdb_id:
+                return JsonResponse({
+                    'error': 'At least one of imdb_id or tmdb_id is required'
+                }, status=400)
+            # Construct vidsrc URLs
+            urls_to_parse = construct_vidsrc_urls(tmdb_id=tmdb_id, imdb_id=imdb_id)
+            if not urls_to_parse:
+                return JsonResponse({
+                    'error': 'No valid URLs could be constructed from provided IDs'
+                }, status=400)
+            successful_results = []
+            for url in urls_to_parse:
+                parse_result = parse_vidsrc_url(url)  # Luôn parse lại, không check cache
+                if parse_result.get('file_url') and 'error' not in parse_result:
+                    parse_result['source_url'] = url
+                    successful_results.append(parse_result)
+                    # Lưu vào cache ngay cả khi đã hết hạn trước đó
+                    save_url_cache_result(url, parse_result)
+            if not successful_results:
+                return JsonResponse({
+                    'error': 'Failed to parse any of the constructed URLs',
+                    'attempted_urls': urls_to_parse
+                }, status=500)
+            # Chuẩn hóa kết quả trả về
+            result_array = []
+            for result in successful_results:
+                source_type = result.get('source_type')
+                if source_type == 'imdb':
+                    movie_id = imdb_id
+                elif source_type == 'tmdb':
+                    movie_id = tmdb_id
+                else:
+                    movie_id = imdb_id or tmdb_id
+                link_item = {
+                    "id": movie_id,
+                    "m3u8": result.get('file_url', ''),
+                    "transcriptid": result.get('id', '')
+                }
+                result_array.append(link_item)
+            return JsonResponse(result_array, safe=False)
+        except json.JSONDecodeError:
+            return JsonResponse({'error': 'Invalid JSON format'}, status=400)
+        except Exception as e:
+            logger.error(f"Error in force-parse movie links API: {str(e)}")
+            return JsonResponse({'error': 'Internal server error'}, status=500)
+
 # Health check endpoint
 def health_check(request):
     """
