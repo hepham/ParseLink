@@ -738,7 +738,6 @@ class MovieLinksWithFallbackAPIView(View):
                     movie_id = movie.imdb_id if movie.imdb_id else movie.tmdb_id
                     
                     link_item = {
-                        "id": movie_id,
                         "m3u8": link.m3u8_url,
                         "transcriptid": link.transcript_id if link.transcript_id else ""
                     }

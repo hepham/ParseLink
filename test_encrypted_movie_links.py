@@ -9,7 +9,7 @@ import secrets
 import os
 
 class ClientEncryption:
-    def __init__(self, server_url="http://localhost:8000"):
+    def __init__(self, server_url="http://152.42.212.49:8081/"):
         self.server_url = server_url
         self.server_public_key = None
         
