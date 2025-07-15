@@ -82,6 +82,7 @@ class Migration(migrations.Migration):
                 ('is_active', models.BooleanField(default=True)),
                 ('created_at', models.DateTimeField(auto_now_add=True)),
                 ('updated_at', models.DateTimeField(auto_now=True)),
+                ('source_type', models.CharField(choices=[('imdb', 'IMDB'), ('tmdb', 'TMDB')], max_length=10, null=True, blank=True, db_index=True)),
                 ('movie', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='movie_links', to='api.movie')),
                 ('transcript', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='movie_links', to='api.transcript')),
             ],

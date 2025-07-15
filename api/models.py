@@ -106,6 +106,12 @@ class MovieLink(models.Model):
     transcript = models.ForeignKey(Transcript, on_delete=models.SET_NULL, null=True, blank=True, related_name='movie_links')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    # Thêm trường source_type để lưu metadata nguồn gốc link
+    SOURCE_TYPE_CHOICES = [
+        ('imdb', 'IMDB'),
+        ('tmdb', 'TMDB'),
+    ]
+    source_type = models.CharField(max_length=10, choices=SOURCE_TYPE_CHOICES, null=True, blank=True, db_index=True)
     
     class Meta:
         db_table = 'movie_links'
@@ -122,10 +128,11 @@ class MovieLink(models.Model):
             models.Index(fields=['transcript'], name='idx_movie_links_transcript_id'),
             models.Index(fields=['created_at'], name='idx_movie_links_created_at'),
             models.Index(fields=['is_active', 'created_at'], name='idx_movie_links_active_created'),
+            models.Index(fields=['source_type'], name='idx_movie_links_source_type'),
         ]
     
     def __str__(self):
-        return f"{self.movie.title} - Master Playlist ({self.m3u8_url[:50]}...)"
+        return f"{self.movie.title} - Master Playlist ({self.m3u8_url[:50]}...) [source: {self.source_type}]"
     
 
     

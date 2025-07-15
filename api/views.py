@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 REDIS_HOST = 'localhost'
 REDIS_PORT = 6379  # Docker container port
 REDIS_DB = 0
-CACHE_EXPIRE = 2 * 24 * 60 * 60  # 2 days
+CACHE_EXPIRE = 2 * 24 * 60 # 2 hours
 
 try:
     r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
@@ -74,55 +74,9 @@ def get_cached_results_for_urls(urls):
     return cached_results
 
 def save_to_database(imdb_id=None, tmdb_id=None, parse_results=None):
-    """Save parsed results to database"""
-    if not parse_results:
-        return
-    
-    try:
-        # Find or create movie
-        movie = Movie.find_by_external_id(tmdb_id=tmdb_id, imdb_id=imdb_id)
-        if not movie:
-            # Create new movie with a default title
-            title = f"Movie {imdb_id or tmdb_id}"
-            movie = Movie.objects.create(
-                tmdb_id=tmdb_id,
-                imdb_id=imdb_id,
-                title=title
-            )
-            logger.info(f"Created new movie: {movie.id}")
-        
-        # Save each successful parse result
-        for result in parse_results:
-            file_url = result.get('file_url')
-            transcript_id = result.get('id')
-            
-            if file_url:
-                # Create or get transcript if transcript_id exists
-                transcript = None
-                if transcript_id:
-                    transcript, created = Transcript.objects.get_or_create(
-                        id=transcript_id,
-                        defaults={'id': transcript_id}
-                    )
-                
-                # Create movie link
-                movie_link, created = MovieLink.objects.get_or_create(
-                    movie=movie,
-                    m3u8_url=file_url,
-                    defaults={
-                        'transcript': transcript,
-                        'is_active': True
-                    }
-                )
-                
-                if created:
-                    logger.info(f"Created new movie link: {movie_link.id}")
-                else:
-                    logger.info(f"Movie link already exists: {movie_link.id}")
-                    
-    except Exception as e:
-        logger.error(f"Failed to save to database: {e}")
-        # Don't raise exception, just log error
+    """No longer saves m3u8 links to database, only transcripts if needed (optional)"""
+    # Do nothing for m3u8 links, keep for backward compatibility
+    pass
 
 def parse_vidsrc_url(url):
     """
@@ -143,91 +97,73 @@ def parse_vidsrc_url(url):
             soup = BeautifulSoup(resp.text, 'html.parser')
 
         # Parse vidsrc.me embed URLs (original logic)
-        if 'vidsrc.net/embed/movie' in url or "vidsrc.xyz/embed/movie" in url:
+        if 'vidsrc.net/embed/movie' in url:
+            source_type = 'tmdb'
+        elif 'vidsrc.xyz/embed/movie' in url:
+            source_type = 'imdb'
+        else:
+            source_type = None
 
+        if 'vidsrc.net/embed/movie' in url or "vidsrc.xyz/embed/movie" in url:
             body = soup.find('body')
             data_i = body.get('data-i') if body else None
-
-        # Get iframe src
             iframe = soup.find('iframe')
             iframe_src = iframe['src'] if iframe and iframe.has_attr('src') else ''
-            
             if not iframe_src:
                 return {'error': 'No iframe found in the page'}
-            
-            # Ensure proper URL format
             if iframe_src.startswith('//'):
                 iframe_url = 'https:' + iframe_src
-            elif iframe_src.startswith('http'): 
+            elif iframe_src.startswith('http'):
                 iframe_url = iframe_src
             else:
                 iframe_url = iframe_src
-            
-            # Get iframe content
             iframe_resp = requests.get(iframe_url, timeout=10)
             iframe_resp.raise_for_status()
             iframe_content = iframe_resp.text
-            
-            # Parse for player iframe source
             player_iframe_src = None
             full_player_iframe_url = None
-        
             match = re.search(r"loadIframe\s*\([^)]*\)\s*{[^}]*src:\s*['\"]([^'\"]+)['\"]", iframe_content, re.DOTALL)
             if match:
                 player_iframe_src = match.group(1)
-            
-                # Build full URL
                 parsed = urlparse(iframe_url)
                 domain = f"{parsed.scheme}://{parsed.netloc}"
-        
                 if player_iframe_src and not player_iframe_src.startswith('http'):
                     if not player_iframe_src.startswith('/'):
                         player_iframe_src = '/' + player_iframe_src
                     full_player_iframe_url = domain + player_iframe_src
                 else:
                     full_player_iframe_url = player_iframe_src
-            
-            # Get final m3u8 URL
-                file_url = None
-                if full_player_iframe_url:
-                    try:
-                        resp2 = requests.get(full_player_iframe_url, timeout=10)
-                        resp2.raise_for_status()
-                        content2 = resp2.text
-                    
-                    # Extract file URL
-                        match2 = re.search(r"file:\s*['\"]([^'\"]+)['\"]", content2)
-                        file_url = match2.group(1) if match2 else None
-                    except Exception as e:
-                        logger.warning(f"Failed to get file URL: {e}")
-            
+            file_url = None
+            if full_player_iframe_url:
+                try:
+                    resp2 = requests.get(full_player_iframe_url, timeout=10)
+                    resp2.raise_for_status()
+                    content2 = resp2.text
+                    match2 = re.search(r"file:\s*['\"]([^'\"]+)['\"]", content2)
+                    file_url = match2.group(1) if match2 else None
+                except Exception as e:
+                    logger.warning(f"Failed to get file URL: {e}")
             result = {
                 'file_url': file_url,
                 'id': data_i,
                 'player_iframe_src': player_iframe_src,
                 'full_player_iframe_url': full_player_iframe_url,
-                'source_domain': 'vidsrc.me'
+                'source_domain': 'vidsrc.me',
+                'source_type': source_type
             }
-            # print(result)
-  
-       
         else:
-            # For other URLs, return basic info
-                title = soup.title.string if soup.title else ''
-                first_p = soup.find('p').get_text(strip=True) if soup.find('p') else ''
-                result = {
-                    'url': url,
-                    'title': title,
+            title = soup.title.string if soup.title else ''
+            first_p = soup.find('p').get_text(strip=True) if soup.find('p') else ''
+            result = {
+                'url': url,
+                'title': title,
                 'first_paragraph': first_p,
-                'source_domain': 'unknown'
-                }
-        
-        # Cache the result
+                'source_domain': 'unknown',
+                'source_type': source_type
+            }
         if r:
             r.setex(cache_key, CACHE_EXPIRE, json.dumps(result))
-        
         return result
-        
     except Exception as e:
         logger.error(f"Error parsing URL {url}: {e}")
         return {'error': str(e)}
@@ -722,6 +658,8 @@ class MovieLinksWithFallbackAPIView(View):
             
             # Step 1: Try to find existing movie links in database
 
+            # Bỏ hoàn toàn phần truy vấn MovieLink.get_links_by_movie_ids và chỉ sử dụng cache + fallback parse.
+            # Nếu có cache thì trả về, nếu không thì parse và trả về, không lưu vào DB nữa.
             links = MovieLink.get_links_by_movie_ids(
                 tmdb_id=tmdb_id,
                 imdb_id=imdb_id
@@ -733,11 +671,15 @@ class MovieLinksWithFallbackAPIView(View):
                 result_array = []
                 
                 for link in links:
-                    movie = link.movie
-                    # Use IMDB ID if available, otherwise TMDB ID
-                    movie_id = movie.imdb_id if movie.imdb_id else movie.tmdb_id
-                    
+                    # Lấy id đúng theo source_type
+                    if link.source_type == 'imdb':
+                        movie_id = link.movie.imdb_id
+                    elif link.source_type == 'tmdb':
+                        movie_id = link.movie.tmdb_id
+                    else:
+                        movie_id = link.movie.imdb_id or link.movie.tmdb_id
                     link_item = {
+                        "id": movie_id,
                         "m3u8": link.m3u8_url,
                         "transcriptid": link.transcript_id if link.transcript_id else ""
                     }
@@ -809,8 +751,19 @@ class MovieLinksWithFallbackAPIView(View):
                 result_array = []
                 
                 for result in successful_results:
-                    # Use IMDB ID if available, otherwise TMDB ID  
-                    movie_id = imdb_id if imdb_id else tmdb_id
+                    # Lấy id đúng theo tham số đầu vào
+                    if imdb_id:
+                        movie_id = imdb_id
+                    else:
+                        movie_id = tmdb_id
+                    
+                    # Lấy id đúng theo source_type
+                    if result.get('source_type') == 'imdb':
+                        movie_id = imdb_id
+                    elif result.get('source_type') == 'tmdb':
+                        movie_id = tmdb_id
+                    else:
+                        movie_id = imdb_id or tmdb_id
                     
                     link_item = {
                         "id": movie_id,
@@ -888,14 +841,19 @@ class EncryptedMovieLinksAPIView(View):
                 return JsonResponse(encrypted_response, status=400)
             
             # Process request (reuse existing logic)
+            # Tương tự cho EncryptedMovieLinksAPIView.post: chỉ dùng cache và fallback, không truy vấn hay lưu MovieLink DB.
             links = MovieLink.get_links_by_movie_ids(tmdb_id=tmdb_id, imdb_id=imdb_id)
             
             if links.exists():
                 # Database has data, return existing links
                 result_array = []
                 for link in links:
-                    movie = link.movie
-                    movie_id = movie.imdb_id if movie.imdb_id else movie.tmdb_id
+                    if link.source_type == 'imdb':
+                        movie_id = link.movie.imdb_id
+                    elif link.source_type == 'tmdb':
+                        movie_id = link.movie.tmdb_id
+                    else:
+                        movie_id = link.movie.imdb_id or link.movie.tmdb_id
                     link_item = {
                         "id": movie_id,
                         "m3u8": link.m3u8_url,
@@ -940,7 +898,13 @@ class EncryptedMovieLinksAPIView(View):
                 # Prepare response
                 result_array = []
                 for result in successful_results:
-                    movie_id = imdb_id if imdb_id else tmdb_id
+                    source_type = result.get('source_type')
+                    if source_type == 'imdb':
+                        movie_id = imdb_id
+                    elif source_type == 'tmdb':
+                        movie_id = tmdb_id
+                    else:
+                        movie_id = imdb_id or tmdb_id
                     link_item = {
                         "id": movie_id,
                         "m3u8": result.get('file_url', ''),
