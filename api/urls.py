@@ -11,6 +11,9 @@ urlpatterns = [
     # Force parse movie links API - Always parse and update Redis
     path('movie-links/force-parse/', views.ForceParseMovieLinksAPIView.as_view(), name='movie-links-force-parse'),
     
+    # AES encrypted force parse movie links API
+    path('encryped/movie-links/force-parse/', views.AESForceParseMovieLinksAPIView.as_view(), name='aes-movie-links-force-parse'),
+    
     # Movie management API - Create/update movies
     path('movies/', views.MovieManagementAPIView.as_view(), name='movie-management'),
     
@@ -36,4 +39,6 @@ urlpatterns = [
     path('encryption/public-key/', views.get_public_key_endpoint, name='get-public-key'),
     path('encryption/test/', views.EncryptionTestAPIView.as_view(), name='encryption-test'),
     path('encrypted/movie-links/', views.EncryptedMovieLinksAPIView.as_view(), name='encrypted-movie-links'),
+    # AES encrypted fallback movie links API
+    path('encryped/movie-links/with-fallback/', views.AESMovieLinksWithFallbackAPIView.as_view(), name='aes-movie-links-with-fallback'),
 ] 

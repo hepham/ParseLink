@@ -122,3 +122,13 @@ STATIC_URL = 'static/'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# AES fixed key for simple AES endpoints (client and server must both know this key)
+AES_FIXED_KEY = b'parseweblink_aes_demo_key_32byte'
+
+
+# Redis configuration
+REDIS_HOST = 'localhost'
+REDIS_PORT = 6379
+REDIS_DB = 0
+CACHE_EXPIRE = 2 * 24 * 60  # 2 hours

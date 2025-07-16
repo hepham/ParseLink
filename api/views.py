@@ -15,18 +15,19 @@ import redis
 import hashlib
 import re
 from urllib.parse import urlparse, urljoin
+from django.conf import settings
 
 from .models import Movie, MovieLink, Transcript, LinkPerformanceLog
-from .encryption import get_public_key, encrypt_response, decrypt_request, is_encrypted_request, encrypt_response_with_session_key, decrypt_request_and_get_session_key
+from .encryption import get_public_key, encrypt_response, decrypt_request, is_encrypted_request, encrypt_response_with_session_key, decrypt_request_and_get_session_key, AESEncryption
 
 # Initialize logger
 logger = logging.getLogger(__name__)
 
 # Redis config for URL parsing cache
-REDIS_HOST = 'localhost'
-REDIS_PORT = 6379  # Docker container port
-REDIS_DB = 0
-CACHE_EXPIRE = 2 * 24 * 60 # 2 hours
+REDIS_HOST = settings.REDIS_HOST
+REDIS_PORT = settings.REDIS_PORT
+REDIS_DB = settings.REDIS_DB
+CACHE_EXPIRE = settings.CACHE_EXPIRE
 
 try:
     r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
@@ -622,6 +623,53 @@ class MovieStatsAPIView(View):
             }, status=500)
 
 
+def get_movie_links_with_fallback(imdb_id, tmdb_id):
+    """
+    Core logic: Lấy link từ cache hoặc parse fallback, trả về result_array
+    """
+    urls_to_parse = construct_vidsrc_urls(tmdb_id=tmdb_id, imdb_id=imdb_id)
+    if not urls_to_parse:
+        # Trả về empty list hoặc raise exception tùy ý
+        return []
+    cached_results = {}
+    urls_to_actually_parse = []
+    for url in urls_to_parse:
+        cached_result = get_url_cache_result(url)
+        if cached_result:
+            cached_results[url] = cached_result
+        else:
+            urls_to_actually_parse.append(url)
+    successful_results = []
+    for url, cached_result in cached_results.items():
+        if cached_result.get('file_url') and 'error' not in cached_result:
+            cached_result['source_url'] = url
+            successful_results.append(cached_result)
+    for url in urls_to_actually_parse:
+        parse_result = parse_vidsrc_url(url)
+        if parse_result.get('file_url') and 'error' not in parse_result:
+            parse_result['source_url'] = url
+            successful_results.append(parse_result)
+            save_url_cache_result(url, parse_result)
+    if not successful_results:
+        return []
+    # Chuẩn hóa kết quả trả về
+    result_array = []
+    for result in successful_results:
+        source_type = result.get('source_type')
+        if source_type == 'imdb':
+            movie_id = imdb_id
+        elif source_type == 'tmdb':
+            movie_id = tmdb_id
+        else:
+            movie_id = imdb_id or tmdb_id
+        link_item = {
+            "id": movie_id,
+            "m3u8": result.get('file_url', ''),
+            "transcriptid": result.get('id', '')
+        }
+        result_array.append(link_item)
+    return result_array
+
 @method_decorator(csrf_exempt, name='dispatch')
 class MovieLinksWithFallbackAPIView(View):
     """
@@ -977,12 +1025,50 @@ class EncryptionTestAPIView(View):
             logger.error(f"Error in encryption test API: {str(e)}")
             return JsonResponse({'error': 'Internal server error'}, status=500)
 
+def force_parse_movie_links(imdb_id, tmdb_id):
+    """
+    Core logic: Luôn parse lại link (bỏ qua cache), lưu vào Redis, trả về result_array
+    """
+    urls_to_parse = construct_vidsrc_urls(tmdb_id=tmdb_id, imdb_id=imdb_id)
+    if not urls_to_parse:
+        return []
+    successful_results = []
+    for url in urls_to_parse:
+        parse_result = parse_vidsrc_url(url)
+        if parse_result.get('file_url') and 'error' not in parse_result:
+            parse_result['source_url'] = url
+            successful_results.append(parse_result)
+            save_url_cache_result(url, parse_result)
+    if not successful_results:
+        return []
+    result_array = []
+    for result in successful_results:
+        source_type = result.get('source_type')
+        if source_type == 'imdb':
+            movie_id = imdb_id
+        elif source_type == 'tmdb':
+            movie_id = tmdb_id
+        else:
+            movie_id = imdb_id or tmdb_id
+        link_item = {
+            "id": movie_id,
+            "m3u8": result.get('file_url', ''),
+            "transcriptid": result.get('id', '')
+        }
+        result_array.append(link_item)
+    return result_array
+
 @method_decorator(csrf_exempt, name='dispatch')
 class ForceParseMovieLinksAPIView(View):
     """
     API View to force parse movie links (bỏ qua cache, luôn parse lại và lưu vào Redis)
     POST /api/movie-links/force-parse/
     Body: {"imdb_id": "tt1234567", "tmdb_id": "12345"}
+    Response: [{
+            "id": "imdb_id or tmdb_id",
+            "m3u8": "m3u8_url",
+            "transcriptid": "transcript_id"
+        }]
     """
     def post(self, request):
         try:
@@ -990,50 +1076,82 @@ class ForceParseMovieLinksAPIView(View):
             imdb_id = data.get('imdb_id')
             tmdb_id = data.get('tmdb_id') or data.get('tmdb')
             if not imdb_id and not tmdb_id:
-                return JsonResponse({
-                    'error': 'At least one of imdb_id or tmdb_id is required'
-                }, status=400)
-            # Construct vidsrc URLs
-            urls_to_parse = construct_vidsrc_urls(tmdb_id=tmdb_id, imdb_id=imdb_id)
-            if not urls_to_parse:
-                return JsonResponse({
-                    'error': 'No valid URLs could be constructed from provided IDs'
-                }, status=400)
-            successful_results = []
-            for url in urls_to_parse:
-                parse_result = parse_vidsrc_url(url)  # Luôn parse lại, không check cache
-                if parse_result.get('file_url') and 'error' not in parse_result:
-                    parse_result['source_url'] = url
-                    successful_results.append(parse_result)
-                    # Lưu vào cache ngay cả khi đã hết hạn trước đó
-                    save_url_cache_result(url, parse_result)
-            if not successful_results:
-                return JsonResponse({
-                    'error': 'Failed to parse any of the constructed URLs',
-                    'attempted_urls': urls_to_parse
-                }, status=500)
-            # Chuẩn hóa kết quả trả về
-            result_array = []
-            for result in successful_results:
-                source_type = result.get('source_type')
-                if source_type == 'imdb':
-                    movie_id = imdb_id
-                elif source_type == 'tmdb':
-                    movie_id = tmdb_id
-                else:
-                    movie_id = imdb_id or tmdb_id
-                link_item = {
-                    "id": movie_id,
-                    "m3u8": result.get('file_url', ''),
-                    "transcriptid": result.get('id', '')
-                }
-                result_array.append(link_item)
+                return JsonResponse({'error': 'At least one of imdb_id or tmdb_id is required'}, status=400)
+            result_array = force_parse_movie_links(imdb_id, tmdb_id)
             return JsonResponse(result_array, safe=False)
-        except json.JSONDecodeError:
-            return JsonResponse({'error': 'Invalid JSON format'}, status=400)
         except Exception as e:
-            logger.error(f"Error in force-parse movie links API: {str(e)}")
-            return JsonResponse({'error': 'Internal server error'}, status=500)
+            logger.exception(f"Error in ForceParseMovieLinksAPIView: {e}")
+            return JsonResponse({'error': str(e)}, status=500)
+
+@method_decorator(csrf_exempt, name='dispatch')
+class AESForceParseMovieLinksAPIView(View):
+    """
+    API View to force parse movie links (AES encrypted, fixed key):
+    POST /api/aes/movie-links/force-parse/
+    Body: {
+        "encrypted_data": "..."  # AES encrypted JSON {imdb_id, tmdb_id}
+    }
+    Response: {
+        "encrypted_data": "..."   # AES encrypted JSON result
+    }
+    """
+    def post(self, request):
+        try:
+            data = json.loads(request.body)
+            encrypted_data = data.get('encrypted_data')
+            if not encrypted_data:
+                return JsonResponse({'error': 'Missing encrypted_data'}, status=400)
+            session_key = settings.AES_FIXED_KEY
+            # Decrypt input
+            try:
+                decrypted_json = AESEncryption.decrypt_data(encrypted_data, session_key)
+                params = json.loads(decrypted_json)
+            except Exception as e:
+                return JsonResponse({'error': f'Failed to decrypt: {e}'}, status=400)
+            imdb_id = params.get('imdb_id')
+            tmdb_id = params.get('tmdb_id') or params.get('tmdb')
+            if not imdb_id and not tmdb_id:
+                return JsonResponse({'error': 'At least one of imdb_id or tmdb_id is required'}, status=400)
+            result_array = force_parse_movie_links(imdb_id, tmdb_id)
+            # Encrypt output
+            encrypted_result = AESEncryption.encrypt_data(json.dumps(result_array), session_key)
+            return JsonResponse({'encrypted_data': encrypted_result})
+        except Exception as e:
+            logger.exception(f"Error in AESForceParseMovieLinksAPIView: {e}")
+            return JsonResponse({'error': str(e)}, status=500)
+
+@method_decorator(csrf_exempt, name='dispatch')
+class AESMovieLinksWithFallbackAPIView(View):
+    """
+    API View: AES mã hóa, fallback parse movie links (không check DB, chỉ cache + parse)
+    POST /api/aes/movie-links/with-fallback/
+    Body: { "encrypted_data": "..." }
+    Response: { "encrypted_data": "..." }
+    """
+    def post(self, request):
+        try:
+            data = json.loads(request.body)
+            encrypted_data = data.get('encrypted_data')
+            if not encrypted_data:
+                return JsonResponse({'error': 'Missing encrypted_data'}, status=400)
+            session_key = settings.AES_FIXED_KEY
+            # Decrypt input
+            try:
+                decrypted_json = AESEncryption.decrypt_data(encrypted_data, session_key)
+                params = json.loads(decrypted_json)
+            except Exception as e:
+                return JsonResponse({'error': f'Failed to decrypt: {e}'}, status=400)
+            imdb_id = params.get('imdb_id')
+            tmdb_id = params.get('tmdb_id') or params.get('tmdb')
+            if not imdb_id and not tmdb_id:
+                return JsonResponse({'error': 'At least one of imdb_id or tmdb_id is required'}, status=400)
+            result_array = get_movie_links_with_fallback(imdb_id, tmdb_id)
+            # Encrypt output
+            encrypted_result = AESEncryption.encrypt_data(json.dumps(result_array), session_key)
+            return JsonResponse({'encrypted_data': encrypted_result})
+        except Exception as e:
+            logger.exception(f"Error in AESMovieLinksWithFallbackAPIView: {e}")
+            return JsonResponse({'error': str(e)}, status=500)
 
 # Health check endpoint
 def health_check(request):
