@@ -729,7 +729,7 @@ class MovieLinksWithFallbackAPIView(View):
                     link_item = {
                         "id": movie_id,
                         "m3u8": link.m3u8_url,
-                        "transcriptid": link.transcript_id if link.transcript_id else ""
+                        "transcriptid": format_transcript_id(link.transcript_id)
                     }
                     result_array.append(link_item)
                 
@@ -816,7 +816,7 @@ class MovieLinksWithFallbackAPIView(View):
                     link_item = {
                         "id": movie_id,
                         "m3u8": result.get('file_url', ''),
-                        "transcriptid": result.get('id', '')
+                        "transcriptid": format_transcript_id(result.get('id', ''))
                     }
                     result_array.append(link_item)
                 
@@ -905,7 +905,7 @@ class EncryptedMovieLinksAPIView(View):
                     link_item = {
                         "id": movie_id,
                         "m3u8": link.m3u8_url,
-                        "transcriptid": link.transcript_id if link.transcript_id else ""
+                        "transcriptid": format_transcript_id(link.transcript_id)
                     }
                     result_array.append(link_item)
                 
@@ -956,7 +956,7 @@ class EncryptedMovieLinksAPIView(View):
                     link_item = {
                         "id": movie_id,
                         "m3u8": result.get('file_url', ''),
-                        "transcriptid": result.get('id', '')
+                        "transcriptid": format_transcript_id(result.get('id', ''))
                     }
                     result_array.append(link_item)
                 
@@ -1053,7 +1053,7 @@ def force_parse_movie_links(imdb_id, tmdb_id):
         link_item = {
             "id": movie_id,
             "m3u8": result.get('file_url', ''),
-            "transcriptid": result.get('id', '')
+            "transcriptid": format_transcript_id(result.get('id', ''))
         }
         result_array.append(link_item)
     return result_array
@@ -1171,3 +1171,13 @@ def health_check(request):
         },
         'note': 'All m3u8 URLs are master playlists containing multiple quality variants'
     })
+
+def format_transcript_id(transcript_id):
+    if transcript_id is None or transcript_id == '':
+        return ''
+    try:
+        # If transcript_id is numeric, pad to 7 digits
+        int_id = int(transcript_id)
+        return str(int_id).zfill(7)
+    except (ValueError, TypeError):
+        return str(transcript_id)
